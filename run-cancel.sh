@@ -53,7 +53,7 @@ for REENTRANCY in false true; do
 
   for cancel in 500 1500 2500 4000; do
     for trial in 1 2 3; do
-      scenario "callers give up at ${cancel}ms (trial $trial): 20 calls x 2000ms" "n=20&delayMs=2000&cancelAfterMs=$cancel" 45
+      scenario "client cancels each call at ${cancel}ms (trial $trial): 20 calls x 2000ms" "n=20&delayMs=2000&cancelAfterMs=$cancel" 45
     done
   done
 done

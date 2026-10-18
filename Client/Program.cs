@@ -3,8 +3,8 @@ using Dapr.Actors;
 using Dapr.Actors.Client;
 
 // A non-actor caller. POST /blast sends n calls at once to one actor id through ActorProxy's non-remoting
-// InvokeMethodAsync - the same call shape DaprMQ's gateway makes - optionally giving up on each after
-// cancelAfterMs.
+// InvokeMethodAsync - the same call shape DaprMQ's gateway makes - optionally cancelling each call's
+// CancellationToken after cancelAfterMs.
 var builder = WebApplication.CreateBuilder(args);
 builder.Services.AddSingleton<IActorProxyFactory>(new ActorProxyFactory(new ActorProxyOptions { RequestTimeout = TimeSpan.FromMinutes(10) }));
 var app = builder.Build();

@@ -53,5 +53,5 @@ for REENTRANCY in false true; do
 
   scenario "serial: 20 calls x 1000ms" "n=20&delayMs=1000"
   scenario "fan-in: 100 calls x 200ms" "n=100&delayMs=200"
-  scenario "callers give up: 20 calls x 2000ms, cancelled after 500ms" "n=20&delayMs=2000&cancelAfterMs=500" 50
+  scenario "client cancels each call at 500ms: 20 calls x 2000ms" "n=20&delayMs=2000&cancelAfterMs=500" 50
 done

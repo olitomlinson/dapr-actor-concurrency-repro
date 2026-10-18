@@ -1,6 +1,6 @@
-# Dapr actor calls overlap when callers cancel
+# Dapr actor calls overlap when the caller cancels them
 
-When callers cancel actor calls that are still queued behind an actor's running turn, the Dapr sidecar dispatches those calls into the actor while the earlier turn is still in progress. Two or more turns then run on the same actor id at once, which breaks turn-based concurrency. It happens with actor reentrancy **off** as well as on.
+When a caller cancels actor calls (through the `CancellationToken` passed to `ActorProxy.InvokeMethodAsync`) while those calls are still queued behind the actor's running turn, the Dapr sidecar dispatches them to the actor while the earlier turn is still in progress. Two or more turns then run on the same actor id at once, which breaks turn-based concurrency. It happens with actor reentrancy **off** as well as on.
 
 Without cancellation, turns are serialised correctly.
 
@@ -53,9 +53,9 @@ On Compose, the scenarios without cancellation were serialised exactly, in both 
 | 20 calls × 1,000ms | 20.1s; 0 overlapping calls; at most 1 invocation in progress | 20.1s; 0; 1 |
 | 100 calls × 200ms | 20.3s; 0; 1 | 20.3s; 0; 1 |
 
-**When callers cancel, invocations overlap.** Each trial sent 20 calls × 2,000ms to one actor, and every caller cancelled after the time shown. Each cell lists 3 trials as (calls that reached the actor, calls started while another was in progress, most in progress at once), summed over both hosts.
+**When the client cancels the calls, invocations overlap.** In each trial the client sent 20 calls × 2,000ms to one actor at once, and cancelled every call after the time shown. Each cell lists 3 trials as (calls that reached the actor, calls started while another was in progress, most in progress at once), summed over both hosts.
 
-| Callers cancel after | Reentrancy off | Reentrancy on |
+| Client cancels each call at | Reentrancy off | Reentrancy on |
 |---|---|---|
 | 500ms | (1,0,1) (3,2,3) (4,3,4) | (1,0,1) (4,3,4) (3,2,3) |
 | 1,500ms | (3,2,3) (7,6,**7**) (6,5,6) | (1,0,1) (9,8,**9**) (5,4,5) |
@@ -87,11 +87,11 @@ Each bar is one invocation of `Work`, from its first line to its `finally`. Ever
 
 ```mermaid
 gantt
-    title Callers give up at 1.5s - Work invocations overlap on one actor (reentrancy off)
+    title Client cancels every call at 1.5s - Work invocations overlap on one actor (reentrancy off)
     dateFormat x
     axisFormat %S.%Ls
-    section Callers
-    waiting, then give up :done, 0, 1500
+    section Client
+    calls in flight until the client cancels them :done, 0, 1500
     section Work on actor a1
     call-4 (1 in progress) :59, 2061
     call-16 (4 in progress) :crit, 1549, 3554
@@ -99,14 +99,14 @@ gantt
     call-18 (3 in progress) :crit, 1549, 3554
 ```
 
-20 calls x 2s were sent to actor `a1` at once, and every caller gave up at 1.5s. Red bars started while another invocation of `Work` on the same actor was still running. This chart is from attempt 5 of 5: the script retries until a trial shows at least 3 overlapping calls. Attempt 1 showed 1, and attempts 2 to 4 showed none.
+The client sent 20 calls × 2s to actor `a1` at once, and cancelled every one of them at 1.5s, through the `CancellationToken` passed to `ActorProxy.InvokeMethodAsync`. Red bars started while another invocation of `Work` on the same actor was still running. This chart is from attempt 5 of 5: the script retries until a trial shows at least 3 overlapping calls. Attempt 1 showed 1, and attempts 2 to 4 showed none.
 
-The second chart shows how it happens. The three calls in red were queued behind `call-4`, as they should be, until their callers gave up at 1.500s. **49ms later all three were dispatched into the actor at once (1.549s), while `call-4` still had half a second to run.** They didn't skip the queue at the start: the caller cancelling is what released them into an actor that was still busy.
+The second chart shows how it happens. The three calls in red were queued behind `call-4`, as they should be, until the client cancelled them at 1.500s. **49ms after that cancellation, the sidecar dispatched all three to the actor at once (1.549s), while `call-4` was still executing, with half a second left to run.** They didn't bypass the queue when they were sent: they waited behind `call-4` until the client cancelled them, and were dispatched to the actor only after that cancellation.
 
 ## What this shows
 
-1. Calls whose callers cancelled while they were queued behind a running turn **still reached the actor**.
-2. They were **dispatched as their callers cancelled**, about 50ms afterwards in the timeline, **while the earlier turn was still in progress**: up to 9 invocations on one actor id at once.
+1. Calls that the client cancelled while they were queued behind a running turn **were still dispatched to the actor**.
+2. The sidecar dispatched them **about 50ms after the client cancelled them**, in the timeline, **while the earlier turn was still executing**: up to 9 invocations on one actor id at once.
 3. It doesn't depend on reentrancy.
 4. Without cancellation, turns are serialised correctly.
 
@@ -116,4 +116,4 @@ A cancelled call is either dropped before it reaches the actor, or dispatched on
 
 ## Found through
 
-[DaprMQ](https://github.com/olitomlinson/dapr-mq): a queue actor under heavy load, whose callers time out after 10s, ended up with turns overwriting each other's state, losing counts and orphaning records.
+[DaprMQ](https://github.com/olitomlinson/dapr-mq): a queue actor under heavy load ended up with turns overwriting each other's state, losing counts and orphaning records. Its gateway cancels actor calls after a 10s timeout, and its Consume streams cancel outstanding actor calls when a stream ends.
