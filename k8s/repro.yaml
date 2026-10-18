@@ -1,0 +1,78 @@
+# Namespace actor-repro: an in-memory actor state store, a Dapr Configuration, 2 actor hosts, 1 client.
+# __REENTRANCY__ is replaced with true or false by run.sh, in both the Configuration and the host's env.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: actor-repro
+---
+apiVersion: dapr.io/v1alpha1
+kind: Component
+metadata:
+  name: statestore
+  namespace: actor-repro
+spec:
+  type: state.in-memory
+  version: v1
+  metadata:
+  - name: actorStateStore
+    value: "true"
+---
+apiVersion: dapr.io/v1alpha1
+kind: Configuration
+metadata:
+  name: repro-config
+  namespace: actor-repro
+spec:
+  features:
+  - name: Actor.Reentrancy
+    enabled: __REENTRANCY__
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: actor-host
+  namespace: actor-repro
+spec:
+  replicas: 2
+  selector:
+    matchLabels: {app: actor-host}
+  template:
+    metadata:
+      labels: {app: actor-host}
+      annotations:
+        dapr.io/enabled: "true"
+        dapr.io/app-id: actor-repro-host
+        dapr.io/app-port: "8080"
+        dapr.io/config: repro-config
+    spec:
+      containers:
+      - name: app
+        image: dapr-actor-repro-host:dev
+        imagePullPolicy: Never
+        env:
+        - {name: REENTRANCY, value: "__REENTRANCY__"}
+        ports: [{containerPort: 8080}]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: client
+  namespace: actor-repro
+spec:
+  replicas: 1
+  selector:
+    matchLabels: {app: client}
+  template:
+    metadata:
+      labels: {app: client}
+      annotations:
+        dapr.io/enabled: "true"
+        dapr.io/app-id: actor-repro-client
+        dapr.io/app-port: "8080"
+        dapr.io/config: repro-config
+    spec:
+      containers:
+      - name: app
+        image: dapr-actor-repro-client:dev
+        imagePullPolicy: Never
+        ports: [{containerPort: 8080}]
