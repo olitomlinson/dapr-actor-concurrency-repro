@@ -1,7 +1,10 @@
 #!/usr/bin/env bash
-# Records real per-call timings on kind (reentrancy off) and prints them as Mermaid Gantt charts:
-#   1. baseline - 5 calls x 1000ms, nobody cancels
-#   2. cancel   - 20 calls x 2000ms, the client cancels every call at 1500ms (retried until a trial shows >= 3 overlapping)
+# Records real per-call timings on kind (reentrancy off) and prints them as Mermaid Gantt charts. In both, the
+# client sends every call at the same moment - POST /blast starts all n calls concurrently (Task.WhenAll) and
+# doesn't wait for one to complete before sending the next:
+#   1. baseline - 5 calls x 1000ms sent concurrently, none cancelled
+#   2. cancel   - 20 calls x 2000ms sent concurrently, the client cancels every call at 1500ms
+#                 (retried until a trial shows >= 3 overlapping)
 #
 #   ./timeline.sh [--cluster NAME] > timeline.md
 set -euo pipefail
@@ -54,9 +57,11 @@ print("gantt")
 print(f"    title {title}")
 print("    dateFormat x")
 print("    axisFormat %S.%Ls")
+print("    section Client")
 if cancel:
-    print("    section Client")
-    print(f"    calls in flight until the client cancels them :done, 0, {cancel}")
+    print(f"    all {len(calls)} calls sent concurrently at 0s, cancelled at {cancel / 1000:g}s :done, 0, {cancel}")
+else:
+    print(f"    all {len(calls)} calls sent concurrently at 0s :done, 0, {max(c['endMs'] for c in calls) - t0}")
 print("    section Work on actor a1")
 for c in calls:
     style = "crit, " if c["inProgressAtStart"] > 1 else ""
@@ -73,7 +78,7 @@ OUT=$(mktemp)
 log "baseline"
 trial "n=5&delayMs=1000" 2
 chart "$OUT" "No cancellation - 5 calls x 1s run one after another" 0 \
-  "Each bar is one invocation of \`Work\`, from its first line to its \`finally\`. Every call starts after the previous one finished."
+  "The client sent all 5 calls at the same moment (0s), concurrently, without waiting for any to complete. Each bar under \`Work on actor a1\` is one invocation of \`Work\`, from its first line to its \`finally\`: the sidecar dispatched them one at a time, each starting only after the previous one had finished."
 
 for attempt in 1 2 3 4 5; do
   log "cancel trial $attempt"
@@ -83,5 +88,5 @@ for attempt in 1 2 3 4 5; do
   [[ $overlapping -ge 3 ]] && break
 done
 chart "$OUT" "Client cancels every call at 1.5s - Work invocations overlap on one actor (reentrancy off)" 1500 \
-  "The client sent 20 calls × 2s to actor \`a1\` at once, and cancelled every one of them at 1.5s, through the \`CancellationToken\` passed to \`ActorProxy.InvokeMethodAsync\`. Red bars started while another invocation of \`Work\` on the same actor was still running. This is attempt $attempt of up to 5; the script retries until a trial shows at least 3 overlapping calls."
+  "The client sent all 20 calls × 2s to actor \`a1\` at the same moment (0s), concurrently, and cancelled every one of them at 1.5s, through the \`CancellationToken\` passed to \`ActorProxy.InvokeMethodAsync\`. Red bars started while another invocation of \`Work\` on the same actor was still running. This is attempt $attempt of up to 5; the script retries until a trial shows at least 3 overlapping calls."
 rm -f "$OUT"

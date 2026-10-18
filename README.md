@@ -15,7 +15,7 @@ Without cancellation, turns are serialised correctly.
 - **`ActorHost`** (2 replicas) hosts `SlowActor`, whose only method `Work` waits `DelayMs`. It has no state, makes no other calls, and doesn't override any actor lifecycle hooks.
   - `Work` counts the invocations in progress per actor id: in on its first line, out in its `finally`.
   - Under turn-based concurrency that count can never go above 1. When it does, the host logs `CONCURRENT TURN`, and `GET /stats` reports the number of overlapping calls and the most invocations in progress at once.
-- **`Client`** is a non-actor app. `POST /blast?actor=a1&n=20&delayMs=2000&cancelAfterMs=500` sends `n` calls to one actor id at the same time, through `ActorProxy`'s non-remoting `InvokeMethodAsync`, and optionally cancels each call's token after `cancelAfterMs`.
+- **`Client`** is a non-actor app. `POST /blast?actor=a1&n=20&delayMs=2000&cancelAfterMs=500` sends `n` calls to one actor id at the same moment: it starts all `n` concurrently (`Task.WhenAll`) through `ActorProxy`'s non-remoting `InvokeMethodAsync`, and doesn't wait for any call to complete before sending the next. With `cancelAfterMs`, it cancels each call's `CancellationToken` that many milliseconds after sending it.
 - **`run.sh`** (Kubernetes) builds both images, loads them into kind, deploys `k8s/repro.yaml` into the namespace `actor-repro`, and runs the scenarios with reentrancy off and then on. **`run-cancel.sh`** runs only the cancellation trials. The reentrancy setting is applied to both the Dapr `Configuration` (the `Actor.Reentrancy` feature) and the SDK (`ActorReentrancyConfig.Enabled`).
 
 ```bash
@@ -75,6 +75,8 @@ gantt
     title No cancellation - 5 calls x 1s run one after another
     dateFormat x
     axisFormat %S.%Ls
+    section Client
+    all 5 calls sent concurrently at 0s :done, 0, 5035
     section Work on actor a1
     call-0 (1 in progress) :17, 1019
     call-2 (1 in progress) :1022, 2024
@@ -83,7 +85,7 @@ gantt
     call-1 (1 in progress) :4034, 5035
 ```
 
-Each bar is one invocation of `Work`, from its first line to its `finally`. Every call starts after the previous one finished.
+The client sent all 5 calls at the same moment (0s), concurrently, without waiting for any to complete. Each bar under `Work on actor a1` is one invocation of `Work`, from its first line to its `finally`: the sidecar dispatched them one at a time, each starting only after the previous one had finished.
 
 ```mermaid
 gantt
@@ -91,7 +93,7 @@ gantt
     dateFormat x
     axisFormat %S.%Ls
     section Client
-    calls in flight until the client cancels them :done, 0, 1500
+    all 20 calls sent concurrently at 0s, cancelled at 1.5s :done, 0, 1500
     section Work on actor a1
     call-4 (1 in progress) :59, 2061
     call-16 (4 in progress) :crit, 1549, 3554
@@ -99,7 +101,7 @@ gantt
     call-18 (3 in progress) :crit, 1549, 3554
 ```
 
-The client sent 20 calls × 2s to actor `a1` at once, and cancelled every one of them at 1.5s, through the `CancellationToken` passed to `ActorProxy.InvokeMethodAsync`. Red bars started while another invocation of `Work` on the same actor was still running. This chart is from attempt 5 of 5: the script retries until a trial shows at least 3 overlapping calls. Attempt 1 showed 1, and attempts 2 to 4 showed none.
+The client sent all 20 calls × 2s to actor `a1` at the same moment (0s), concurrently, and cancelled every one of them at 1.5s, through the `CancellationToken` passed to `ActorProxy.InvokeMethodAsync`. Red bars started while another invocation of `Work` on the same actor was still running. This chart is from attempt 5 of 5: the script retries until a trial shows at least 3 overlapping calls. Attempt 1 showed 1, and attempts 2 to 4 showed none.
 
 The second chart shows how it happens. The three calls in red were queued behind `call-4`, as they should be, until the client cancelled them at 1.500s. **49ms after that cancellation, the sidecar dispatched all three to the actor at once (1.549s), while `call-4` was still executing, with half a second left to run.** They didn't bypass the queue when they were sent: they waited behind `call-4` until the client cancelled them, and were dispatched to the actor only after that cancellation.
 
