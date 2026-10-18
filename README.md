@@ -1,5 +1,7 @@
 # Dapr actor calls overlap when the caller cancels them
 
+Reported as [dapr/dapr#10835](https://github.com/dapr/dapr/issues/10835).
+
 When a caller cancels actor calls (through the `CancellationToken` passed to `ActorProxy.InvokeMethodAsync`) while those calls are still queued behind the actor's running turn, the Dapr sidecar dispatches them to the actor while the earlier turn is still in progress. Two or more turns then run on the same actor id at once, which breaks turn-based concurrency. It happens with actor reentrancy **off** as well as on.
 
 Without cancellation, turns are serialised correctly.
