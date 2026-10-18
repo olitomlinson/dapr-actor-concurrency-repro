@@ -16,49 +16,99 @@ Without cancellation, turns are serialised correctly.
   - `Work` counts the invocations in progress per actor id: in on its first line, out in its `finally`.
   - Under turn-based concurrency that count can never go above 1. When it does, the host logs `CONCURRENT TURN`, and `GET /stats` reports the number of overlapping calls and the most invocations in progress at once.
 - **`Client`** is a non-actor app. `POST /blast?actor=a1&n=20&delayMs=2000&cancelAfterMs=500` sends `n` calls to one actor id at the same time, through `ActorProxy`'s non-remoting `InvokeMethodAsync`, and optionally cancels each call's token after `cancelAfterMs`.
-- **`run.sh`** builds both images, loads them into kind, deploys `k8s/repro.yaml` into the namespace `actor-repro`, and runs the scenarios with reentrancy off and then on. **`run-cancel.sh`** runs only the cancellation trials. The reentrancy setting is applied to both the Dapr `Configuration` (the `Actor.Reentrancy` feature) and the SDK (`ActorReentrancyConfig.Enabled`).
+- **`run.sh`** (Kubernetes) builds both images, loads them into kind, deploys `k8s/repro.yaml` into the namespace `actor-repro`, and runs the scenarios with reentrancy off and then on. **`run-cancel.sh`** runs only the cancellation trials. The reentrancy setting is applied to both the Dapr `Configuration` (the `Actor.Reentrancy` feature) and the SDK (`ActorReentrancyConfig.Enabled`).
 
 ```bash
 ./run.sh --cluster <kind cluster with Dapr installed>
 ./run-cancel.sh --cluster <kind cluster with Dapr installed>
+./timeline.sh --cluster <kind cluster with Dapr installed> > timeline.md   # the Mermaid charts below
 ```
+
+### Docker Compose
+
+`docker-compose.yml` runs the same apps without Kubernetes:
+
+- Dapr 1.18.7 placement and scheduler
+- two actor hosts and the client, each app with its own `daprd` sidecar sharing its network namespace
+- the in-memory actor state store, and a Dapr `Configuration` chosen with `REENTRANCY`
+
+```bash
+./compose-run.sh                    # the run.sh scenarios, reentrancy off then on
+CANCEL_TRIALS=1 ./compose-run.sh    # the run-cancel.sh trials
+REENTRANCY=true docker compose up -d --build   # or bring it up and call it by hand:
+curl -X POST "localhost:18200/blast?actor=a1&n=20&delayMs=2000&cancelAfterMs=500"
+curl localhost:18210/stats; curl localhost:18211/stats
+```
+
+On Compose, the scenarios without cancellation were serialised exactly, in both modes. The single cancellation trial (20 calls × 2s, cancelled at 500ms) overlapped with reentrancy on: 2 calls reached the actor, 1 of them while the other was still running. With reentrancy off, only 1 call reached the actor in that trial. That's one trial per mode, so for anything conclusive, run `CANCEL_TRIALS=1`.
 
 ## Results
 
-These results come from an earlier version of the counter, which counted from `OnPreActorMethodAsync` to `OnPostActorMethodAsync` or `OnActorMethodFailedAsync` rather than inside `Work`. Both run inside the turn, before the response goes back to the sidecar. The counter now sits inside `Work`, so the hook lifecycle can't be what produces the overlaps. A rerun with it is in progress, and these tables will be updated with its results.
+`run.sh` and `run-cancel.sh`, with `Work` counting its own invocations.
 
-**Without cancellation, there's no overlap.** Every call ran on its own, and the total time was calls × delay.
+**Without cancellation, there's no overlap.** Every call ran on its own, and the total time was exactly calls × delay.
 
 | Scenario | Reentrancy off | Reentrancy on |
 |---|---|---|
-| 20 calls × 1,000ms | 20.1s; 0 overlapping calls; at most 1 turn in progress | 20.1s; 0; 1 |
+| 20 calls × 1,000ms | 20.1s; 0 overlapping calls; at most 1 invocation in progress | 20.1s; 0; 1 |
 | 100 calls × 200ms | 20.3s; 0; 1 | 20.3s; 0; 1 |
 
-**When callers cancel, turns overlap.** Each trial was 20 calls × 2,000ms to one actor, with every caller cancelling after the time shown. The counts are summed over both hosts.
+**When callers cancel, invocations overlap.** Each trial sent 20 calls × 2,000ms to one actor, and every caller cancelled after the time shown. Each cell lists 3 trials as (calls that reached the actor, calls started while another was in progress, most in progress at once), summed over both hosts.
 
-| Reentrancy | Callers cancel after | Trial | Calls that reached the actor | Calls started while another turn was in progress | Most turns in progress at once |
-|---|---|---|---|---|---|
-| off | 500ms | 1 | 6 | 5 | **6** |
-| off | 500ms | 2 | 5 | 4 | **5** |
-| off | 500ms | 3 | 2 | 1 | 2 |
-| off | 1,500ms | 1 | 3 | 2 | 3 |
-| off | 1,500ms | 2 | 6 | 5 | **6** |
-| off | 1,500ms | 3 | 2 | 1 | 2 |
-| off | 2,500ms | 1–3 | 2 each | 0 | 1 |
-| off | 4,000ms | 1, 2 | 2 each | 0 | 1 |
-| off | 4,000ms | 3 | 3 | 1 | 2 |
-| on | 500ms | 1, 2, 3 | 5, 6, 5 | 4, 5, 4 | **5, 6, 5** |
-| on | 1,500ms | 1, 2, 3 | 4, 1, 1 | 3, 0, 0 | 4, 1, 1 |
-| on | 2,500ms | 1, 2, 3 | 7, 2, 4 | 5, 0, 2 | **6**, 1, 3 |
-| on | 4,000ms | 1–3 | 2 each | 0 | 1 |
+| Callers cancel after | Reentrancy off | Reentrancy on |
+|---|---|---|
+| 500ms | (1,0,1) (3,2,3) (4,3,4) | (1,0,1) (4,3,4) (3,2,3) |
+| 1,500ms | (3,2,3) (7,6,**7**) (6,5,6) | (1,0,1) (9,8,**9**) (5,4,5) |
+| 2,500ms | (3,1,2) (6,4,5) (2,0,1) | (3,1,2) (2,0,1) (2,0,1) |
+| 4,000ms | (2,0,1) (5,3,4) (2,0,1) | (3,1,2) (7,5,6) (2,0,1) |
 
-In total, turns overlapped in **7 of 12** trials with reentrancy off and **7 of 12** with it on.
+Invocations overlapped in **8 of 12** trials with reentrancy off and **7 of 12** with it on: up to **7** and **9** invocations of `Work` at once on one actor id.
+
+An earlier version counted in `OnPreActorMethodAsync` and `OnPostActorMethodAsync` instead of inside `Work`. It gave the same picture: 7 of 12 trials in each mode, up to 6 at once.
+
+## Timeline
+
+`timeline.sh` records when each invocation of `Work` started and ended. Times are relative to when the client sent the calls, with reentrancy off.
+
+```mermaid
+gantt
+    title No cancellation - 5 calls x 1s run one after another
+    dateFormat x
+    axisFormat %S.%Ls
+    section Work on actor a1
+    call-0 (1 in progress) :17, 1019
+    call-2 (1 in progress) :1022, 2024
+    call-4 (1 in progress) :2025, 3027
+    call-3 (1 in progress) :3029, 4031
+    call-1 (1 in progress) :4034, 5035
+```
+
+Each bar is one invocation of `Work`, from its first line to its `finally`. Every call starts after the previous one finished.
+
+```mermaid
+gantt
+    title Callers give up at 1.5s - Work invocations overlap on one actor (reentrancy off)
+    dateFormat x
+    axisFormat %S.%Ls
+    section Callers
+    waiting, then give up :done, 0, 1500
+    section Work on actor a1
+    call-4 (1 in progress) :59, 2061
+    call-16 (4 in progress) :crit, 1549, 3554
+    call-15 (2 in progress) :crit, 1549, 3554
+    call-18 (3 in progress) :crit, 1549, 3554
+```
+
+20 calls x 2s were sent to actor `a1` at once, and every caller gave up at 1.5s. Red bars started while another invocation of `Work` on the same actor was still running. This chart is from attempt 5 of 5: the script retries until a trial shows at least 3 overlapping calls. Attempt 1 showed 1, and attempts 2 to 4 showed none.
+
+The second chart shows how it happens. The three calls in red were queued behind `call-4`, as they should be, until their callers gave up at 1.500s. **49ms later all three were dispatched into the actor at once (1.549s), while `call-4` still had half a second to run.** They didn't skip the queue at the start: the caller cancelling is what released them into an actor that was still busy.
 
 ## What this shows
 
-1. Calls whose callers cancelled while they were queued behind a running turn **still reached the actor**. In the 500ms trials every caller had already given up, yet 5 or 6 calls ran.
-2. Those calls were **dispatched while the earlier turn was still in progress**: up to 6 turns on one actor id at once.
+1. Calls whose callers cancelled while they were queued behind a running turn **still reached the actor**.
+2. They were **dispatched as their callers cancelled**, about 50ms afterwards in the timeline, **while the earlier turn was still in progress**: up to 9 invocations on one actor id at once.
 3. It doesn't depend on reentrancy.
+4. Without cancellation, turns are serialised correctly.
 
 ## Expected behaviour
 

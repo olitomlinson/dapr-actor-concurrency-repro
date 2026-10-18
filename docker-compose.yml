@@ -1,0 +1,54 @@
+# The same repro without Kubernetes: Dapr placement + scheduler, two actor hosts and a client, each app
+# with its own daprd sidecar sharing its network namespace (so the app reaches it on localhost:3500).
+#
+#   REENTRANCY=false docker compose up -d --build     # or REENTRANCY=true
+#   ./compose-run.sh                                    # runs the scenarios against it
+#
+# Client: http://localhost:18200/blast   Actor hosts' counters: http://localhost:18210/stats, :18211/stats
+x-daprd: &daprd
+  image: daprio/daprd:1.18.7
+  volumes:
+    - ./compose/components:/components
+    - ./compose:/config
+  depends_on: [placement, scheduler]
+
+services:
+  placement:
+    image: daprio/placement:1.18.7
+    command: ["./placement", "--port", "50005"]
+
+  scheduler:
+    image: daprio/scheduler:1.18.7
+    command: ["./scheduler", "--port", "50006", "--etcd-data-dir", "/data"]
+    tmpfs: [/data]
+
+  actor-host-1:
+    build: {context: ., args: {PROJECT: ActorHost}}
+    image: dapr-actor-repro-host:dev
+    environment:
+      - REENTRANCY=${REENTRANCY:-false}
+    ports: ["18210:8080"]
+  actor-host-1-dapr:
+    <<: *daprd
+    command: ./daprd --app-id actor-repro-host --app-port 8080 --dapr-http-port 3500 --placement-host-address placement:50005 --scheduler-host-address scheduler:50006 --resources-path /components --config /config/config-reentrancy-${REENTRANCY:-false}.yaml --log-level warn
+    network_mode: service:actor-host-1
+
+  actor-host-2:
+    image: dapr-actor-repro-host:dev
+    depends_on: [actor-host-1] # built by actor-host-1
+    environment:
+      - REENTRANCY=${REENTRANCY:-false}
+    ports: ["18211:8080"]
+  actor-host-2-dapr:
+    <<: *daprd
+    command: ./daprd --app-id actor-repro-host --app-port 8080 --dapr-http-port 3500 --placement-host-address placement:50005 --scheduler-host-address scheduler:50006 --resources-path /components --config /config/config-reentrancy-${REENTRANCY:-false}.yaml --log-level warn
+    network_mode: service:actor-host-2
+
+  client:
+    build: {context: ., args: {PROJECT: Client}}
+    image: dapr-actor-repro-client:dev
+    ports: ["18200:8080"]
+  client-dapr:
+    <<: *daprd
+    command: ./daprd --app-id actor-repro-client --app-port 8080 --dapr-http-port 3500 --placement-host-address placement:50005 --scheduler-host-address scheduler:50006 --resources-path /components --config /config/config-reentrancy-${REENTRANCY:-false}.yaml --log-level warn
+    network_mode: service:client
